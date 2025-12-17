@@ -5,7 +5,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "ESP32 Alert Server is running 🚀"
+    return "ESP32 Alert Server is running 🚀 יודה ינרקומן "
 
 @app.route("/alert", methods=["POST"])
 def alert():
