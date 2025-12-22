@@ -8,20 +8,22 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# ===== ENV =====
+# ---------- ENV ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-SHARED_SECRET = os.environ.get("SHARED_SECRET", "")
+SHARED_SECRET = os.environ.get("SHARED_SECRET", "")  # אותו סוד שמוגדר ב-Render
 DB_PATH = os.environ.get("DB_PATH", "data.db")
 DANGER_RADIUS_KM = float(os.environ.get("DANGER_RADIUS_KM", "1.0"))
 
-# ===== LAST EVENT =====
+# ---------- In-memory current event ----------
 LAST_EVENT = {
     "active": False,
-    "type": None,     # smoke / quake / normal
-    "level": None,    # light / strong / None
+    "type": None,   # smoke / quake / normal / unknown
+    "level": None,  # light / strong / None
     "lat": None,
     "lon": None,
-    "ts": None
+    "ts": None,
+    "device_id": None,
+    "raw": {}
 }
 
 EVENT_TEXT = {
@@ -32,11 +34,13 @@ EVENT_TEXT = {
     ("normal", None):    "✅ חזרה לשגרה",
 }
 
-# ===== DB =====
+
+# ---------- DB ----------
 def db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db():
     conn = db()
@@ -54,17 +58,22 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 init_db()
 
-# ===== UTIL =====
+
+# ---------- Utils ----------
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
-def to_float(x):
-    try:
-        return float(x)
-    except Exception:
-        return None
+
+def current_event_label():
+    if not LAST_EVENT.get("active"):
+        return "אין אירוע פעיל"
+    t = LAST_EVENT.get("type")
+    lvl = LAST_EVENT.get("level")
+    return EVENT_TEXT.get((t, lvl), f"⚠️ אירוע: {t} | רמה: {lvl}")
+
 
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -74,15 +83,8 @@ def haversine_km(lat1, lon1, lat2, lon2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return R * c
 
-def current_event_label():
-    if not LAST_EVENT["active"]:
-        return "אין אירוע פעיל"
-    return EVENT_TEXT.get(
-        (LAST_EVENT["type"], LAST_EVENT["level"]),
-        f"⚠️ אירוע: {LAST_EVENT['type']} | רמה: {LAST_EVENT['level']}"
-    )
 
-def upsert_user(chat_id, name):
+def upsert_user(chat_id: str, name: str):
     conn = db()
     cur = conn.cursor()
     cur.execute("""
@@ -92,15 +94,19 @@ def upsert_user(chat_id, name):
     conn.commit()
     conn.close()
 
-def set_all_pending(pending):
+
+def set_all_pending(pending: int):
     conn = db()
-    conn.execute("UPDATE users SET pending_loc=?", (pending,))
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET pending_loc=?", (pending,))
     conn.commit()
     conn.close()
 
-def update_location(chat_id, lat, lon):
+
+def update_location(chat_id: str, lat: float, lon: float):
     conn = db()
-    conn.execute("""
+    cur = conn.cursor()
+    cur.execute("""
     UPDATE users
     SET last_lat=?, last_lon=?, last_loc_ts=?, pending_loc=0
     WHERE chat_id=?
@@ -108,147 +114,232 @@ def update_location(chat_id, lat, lon):
     conn.commit()
     conn.close()
 
-# ===== TELEGRAM =====
-def telegram_send(chat_id, text, reply_markup=None):
+
+# ---------- Telegram ----------
+def telegram_send(chat_id: str, text: str, reply_markup=None):
     if not BOT_TOKEN:
-        return
+        return False, "BOT_TOKEN missing"
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    requests.post(url, json=payload, timeout=15)
+    r = requests.post(url, json=payload, timeout=15)
+    return r.ok, r.text
 
-def telegram_request_location(chat_id):
+
+def telegram_request_location(chat_id: str, event_text: str):
     reply_markup = {
         "keyboard": [[{"text": "📍 שלח מיקום", "request_location": True}]],
         "resize_keyboard": True,
         "one_time_keyboard": True
     }
-    telegram_send(
-        chat_id,
-        f"🚨 {current_event_label()}\n\nאנא שלח מיקום כדי לבדוק אם אתה באזור סכנה.",
-        reply_markup
+    msg = (
+        f"⚠️ יש אירוע: {event_text}\n\n"
+        "בבקשה שלח מיקום כדי לבדוק אם אתה באזור סכנה."
     )
+    return telegram_send(chat_id, msg, reply_markup)
 
-# ===== WEB =====
+
+# ---------- Web ----------
 @app.get("/")
 def home():
     conn = db()
     users = conn.execute("SELECT * FROM users").fetchall()
     conn.close()
 
-    danger, safe, pending = [], [], []
+    danger = []
+    safe = []
+    pending = []
 
     for u in users:
         if u["pending_loc"] == 1:
             pending.append(u)
             continue
 
-        if not LAST_EVENT["active"] or u["last_lat"] is None or u["last_lon"] is None:
-            safe.append((u, None))
-            continue
-
-        if LAST_EVENT["lat"] is None or LAST_EVENT["lon"] is None:
+        # אם אין מיקום למשתמש או אין אירוע פעיל או אין מיקום לאירוע -> safe/unknown
+        if (u["last_lat"] is None or u["last_lon"] is None or
+                not LAST_EVENT["active"] or
+                LAST_EVENT["lat"] is None or LAST_EVENT["lon"] is None):
             safe.append((u, None))
             continue
 
         dist = haversine_km(
-            u["last_lat"], u["last_lon"],
-            LAST_EVENT["lat"], LAST_EVENT["lon"]
+            float(u["last_lat"]), float(u["last_lon"]),
+            float(LAST_EVENT["lat"]), float(LAST_EVENT["lon"])
         )
-        (danger if dist <= DANGER_RADIUS_KM else safe).append((u, dist))
+        if dist <= DANGER_RADIUS_KM:
+            danger.append((u, dist))
+        else:
+            safe.append((u, dist))
 
-    def row(u, d):
-        return f"<li>{u['name']} — {('N/A' if d is None else f'{d:.2f} km')}</li>"
-
-    return f"""
+    event_html = f"""
     <h2>ESP32 Alert Server ✅</h2>
     <p><b>Event:</b> {current_event_label()}</p>
-    <p><b>Time:</b> {LAST_EVENT['ts']}</p>
-    <hr>
-    <h3>🚨 In danger</h3><ul>{''.join(row(u,d) for u,d in danger)}</ul>
-    <h3>✅ Safe / Unknown</h3><ul>{''.join(row(u,d) for u,d in safe)}</ul>
-    <h3>⏳ No response</h3><ul>{''.join(f'<li>{u["name"]}</li>' for u in pending)}</ul>
+    <p><b>Active:</b> {LAST_EVENT["active"]}</p>
+    <p><b>Device:</b> {LAST_EVENT["device_id"]}</p>
+    <p><b>Event lat/lon:</b> {LAST_EVENT["lat"]}, {LAST_EVENT["lon"]}</p>
+    <p><b>Radius (km):</b> {DANGER_RADIUS_KM}</p>
+    <p><b>Time (UTC):</b> {LAST_EVENT["ts"]}</p>
+    <hr/>
     """
 
-# ===== ESP32 -> SERVER =====
+    def row(u, dist):
+        dist_str = "N/A" if dist is None else f"{dist:.2f} km"
+        last_ts = u["last_loc_ts"] or "N/A"
+        return f"<li>{u['name']} — {dist_str} — last={last_ts}</li>"
+
+    html = event_html
+    html += "<h3>🚨 In danger</h3><ul>" + "".join(row(u, d) for u, d in danger) + "</ul>"
+    html += "<h3>✅ Safe / Unknown</h3><ul>" + "".join(row(u, d) for u, d in safe) + "</ul>"
+    html += "<h3>⏳ No response</h3><ul>" + "".join(f"<li>{u['name']}</li>" for u in pending) + "</ul>"
+
+    return html
+
+
+# ---------- ESP32 -> Server ----------
 @app.post("/alert")
 def alert():
+    # Secret via header (מומלץ)
     if SHARED_SECRET:
-        if request.headers.get("X-SECRET", "") != SHARED_SECRET:
-            return jsonify({"ok": False}), 401
+        secret = request.headers.get("X-SECRET", "")
+        if secret != SHARED_SECRET:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}
 
-    LAST_EVENT["active"] = True
-    LAST_EVENT["type"] = data.get("type")
-    LAST_EVENT["level"] = data.get("level")
-    LAST_EVENT["lat"] = to_float(data.get("event_lat"))
-    LAST_EVENT["lon"] = to_float(data.get("event_lon"))
-    LAST_EVENT["ts"] = now_iso()
+    # תומך בשני פורמטים:
+    # 1) חדש: type/level/event_lat/event_lon
+    # 2) ישן (שלך): status/message/device_id/data
+    event_type = data.get("type")
+    level = data.get("level")
 
+    if not event_type:
+        status = data.get("status")
+        msg = data.get("message")
+
+        if status in ("smoke", "quake", "normal"):
+            event_type = status
+        else:
+            event_type = "unknown"
+
+        if msg in ("light", "strong"):
+            level = msg
+        else:
+            level = None
+
+    LAST_EVENT["active"] = True
+    LAST_EVENT["type"] = event_type
+    LAST_EVENT["level"] = level
+    LAST_EVENT["lat"] = data.get("event_lat")  # יכול להיות None וזה בסדר
+    LAST_EVENT["lon"] = data.get("event_lon")
+    LAST_EVENT["device_id"] = data.get("device_id") or data.get("device") or "esp32"
+    LAST_EVENT["ts"] = now_iso()
+    LAST_EVENT["raw"] = data
+
+    # כולם צריכים מיקום עכשיו
     set_all_pending(1)
 
+    # שליחת בקשה למיקום + ציון סוג האירוע
+    label = current_event_label()
     conn = db()
     users = conn.execute("SELECT chat_id FROM users").fetchall()
     conn.close()
 
     for u in users:
-        telegram_request_location(u["chat_id"])
+        telegram_request_location(u["chat_id"], label)
 
-    return jsonify({"ok": True})
+    print("Received alert:", LAST_EVENT)
+    return jsonify({"ok": True, "saved": LAST_EVENT})
 
-# ===== TELEGRAM WEBHOOK =====
+
+# ---------- Telegram -> Server (Webhook) ----------
 @app.post("/telegram")
 def telegram_webhook():
-    update = request.get_json(silent=True) or {}
-    msg = update.get("message") or update.get("edited_message")
-    if not msg:
-        return jsonify({"ok": True})
-
-    chat = msg.get("chat", {})
-    chat_id = str(chat.get("id"))
-    name = (chat.get("first_name") or "").strip() or "User"
-
-    upsert_user(chat_id, name)
-
-    text = (msg.get("text") or "").strip()
-    loc = msg.get("location")
-
-    if text == "/start":
-        telegram_send(
-            chat_id,
-            "שלום! 👋\nאני מערכת לניטור סכנות.\n"
-            "בזמן אירוע אבקש ממך מיקום ואבדוק אם אתה בסכנה.\n\n"
-            f"מצב נוכחי: {current_event_label()}"
-        )
-        return jsonify({"ok": True})
-
-    if text == "/help":
-        telegram_send(chat_id, "פקודות:\n/start\n/help\n📍 שליחת מיקום בעת אירוע")
-        return jsonify({"ok": True})
-
-    if loc:
-        lat, lon = loc["latitude"], loc["longitude"]
-        update_location(chat_id, lat, lon)
-
-        if not LAST_EVENT["active"]:
-            telegram_send(chat_id, "קיבלתי מיקום. כרגע אין אירוע פעיל.")
+    try:
+        update = request.get_json(silent=True) or {}
+        msg = update.get("message") or update.get("edited_message")
+        if not msg:
             return jsonify({"ok": True})
 
-        if LAST_EVENT["lat"] is None:
-            telegram_send(chat_id, f"קיבלתי מיקום.\nאירוע פעיל: {current_event_label()}")
+        chat = msg.get("chat", {})
+        chat_id = str(chat.get("id"))
+
+        name = (chat.get("first_name") or "")
+        if chat.get("last_name"):
+            name += " " + chat.get("last_name")
+        name = name.strip() or "Unknown"
+
+        text = (msg.get("text") or "").strip()
+
+        # תמיד נרשום משתמש
+        upsert_user(chat_id, name)
+
+        # /start
+        if text == "/start":
+            hello = (
+                "שלום! אני מערכת לניטור סכנות מבוססת ESP32 🛰️\n\n"
+                "מה אני עושה?\n"
+                "• מקבל התראות מה-ESP32 (עשן / רעידת אדמה)\n"
+                "• בזמן אירוע מבקש מיקום מכל המשתמשים\n"
+                "• מציג באתר מי באזור סכנה ומי לא ענה\n\n"
+                f"סטטוס נוכחי: {current_event_label()}\n\n"
+                "פקודות:\n"
+                "/help – עזרה\n"
+            )
+            telegram_send(chat_id, hello)
             return jsonify({"ok": True})
 
-        dist = haversine_km(lat, lon, LAST_EVENT["lat"], LAST_EVENT["lon"])
-        telegram_send(
-            chat_id,
-            f"{'⚠️ בסכנה' if dist <= DANGER_RADIUS_KM else '✅ מחוץ לסכנה'}\n"
-            f"מרחק: {dist:.2f} ק״מ\n{current_event_label()}"
-        )
+        # /help
+        if text == "/help":
+            help_msg = (
+                "עזרה:\n"
+                "/start – הודעת פתיחה והרשמה\n"
+                "/help – תפריט זה\n\n"
+                "📍 כשיהיה אירוע תקבל בקשה לשלוח מיקום."
+            )
+            telegram_send(chat_id, help_msg)
+            return jsonify({"ok": True})
+
+        # Location
+        loc = msg.get("location")
+        if loc:
+            lat = float(loc["latitude"])
+            lon = float(loc["longitude"])
+            update_location(chat_id, lat, lon)
+
+            # אין אירוע פעיל
+            if not LAST_EVENT.get("active"):
+                telegram_send(chat_id, "✅ קיבלתי מיקום. כרגע אין אירוע פעיל.")
+                return jsonify({"ok": True})
+
+            # יש אירוע אבל אין לו מיקום
+            if LAST_EVENT.get("lat") is None or LAST_EVENT.get("lon") is None:
+                telegram_send(
+                    chat_id,
+                    "✅ קיבלתי מיקום.\n"
+                    f"יש אירוע פעיל: {current_event_label()}\n"
+                    "עדיין אין לי מיקום של האירוע עצמו, אז לא ניתן לחשב מרחק."
+                )
+                return jsonify({"ok": True})
+
+            # יש מיקום אירוע + מיקום משתמש
+            dist = haversine_km(lat, lon, float(LAST_EVENT["lat"]), float(LAST_EVENT["lon"]))
+            if dist <= DANGER_RADIUS_KM:
+                telegram_send(chat_id, f"⚠️ אתה בתוך אזור הסכנה! ({dist:.2f} ק״מ)\nאירוע: {current_event_label()}")
+            else:
+                telegram_send(chat_id, f"✅ אתה מחוץ לאזור הסכנה. ({dist:.2f} ק״מ)\nאירוע: {current_event_label()}")
+            return jsonify({"ok": True})
+
+        # טקסט אחר
+        if text:
+            telegram_send(chat_id, "לא זיהיתי פקודה. נסה /help")
         return jsonify({"ok": True})
 
-    return jsonify({"ok": True})
+    except Exception as e:
+        print("ERROR in /telegram:", repr(e))
+        # מחזירים 200 כדי שטלגרם לא יציף retries
+        return jsonify({"ok": False, "error": str(e)}), 200
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
