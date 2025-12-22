@@ -200,7 +200,7 @@ def alert():
 # ---------- Telegram -> Server (Webhook) ----------
 @app.post("/telegram")
 # למעלה בקובץ (Globals)
-ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")  # שים פה את ה-ID שלך ב-Render env
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "") 
 EVENT_TEXT = {
     ("smoke", "strong"): "🔥 עשן / שריפה (חזק)",
     ("smoke", "light"):  "🔥 עשן / שריפה (קל)",
