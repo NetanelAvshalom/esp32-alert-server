@@ -62,6 +62,16 @@ def init_db():
 init_db()
 
 
+def user_exists(chat_id: str) -> bool:
+    conn = db()
+    row = conn.execute(
+        "SELECT 1 FROM users WHERE chat_id=? LIMIT 1",
+        (chat_id,)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
 # ---------- Utils ----------
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -156,7 +166,6 @@ def home():
             pending.append(u)
             continue
 
-        # אם אין מיקום למשתמש או אין אירוע פעיל או אין מיקום לאירוע -> safe/unknown
         if (u["last_lat"] is None or u["last_lon"] is None or
                 not LAST_EVENT["active"] or
                 LAST_EVENT["lat"] is None or LAST_EVENT["lon"] is None):
@@ -199,7 +208,6 @@ def home():
 # ---------- ESP32 -> Server ----------
 @app.post("/alert")
 def alert():
-    # Secret via header (מומלץ)
     if SHARED_SECRET:
         secret = request.headers.get("X-SECRET", "")
         if secret != SHARED_SECRET:
@@ -207,9 +215,6 @@ def alert():
 
     data = request.get_json(silent=True) or {}
 
-    # תומך בשני פורמטים:
-    # 1) חדש: type/level/event_lat/event_lon
-    # 2) ישן (שלך): status/message/device_id/data
     event_type = data.get("type")
     level = data.get("level")
 
@@ -230,16 +235,14 @@ def alert():
     LAST_EVENT["active"] = True
     LAST_EVENT["type"] = event_type
     LAST_EVENT["level"] = level
-    LAST_EVENT["lat"] = data.get("event_lat")  # יכול להיות None וזה בסדר
+    LAST_EVENT["lat"] = data.get("event_lat")
     LAST_EVENT["lon"] = data.get("event_lon")
     LAST_EVENT["device_id"] = data.get("device_id") or data.get("device") or "esp32"
     LAST_EVENT["ts"] = now_iso()
     LAST_EVENT["raw"] = data
 
-    # כולם צריכים מיקום עכשיו
     set_all_pending(1)
 
-    # שליחת בקשה למיקום + ציון סוג האירוע
     label = current_event_label()
     conn = db()
     users = conn.execute("SELECT chat_id FROM users").fetchall()
@@ -271,25 +274,38 @@ def telegram_webhook():
 
         text = (msg.get("text") or "").strip()
 
-        # תמיד נרשום משתמש
-        upsert_user(chat_id, name)
-
-        # /start
+        # ✅ /start עם זיהוי פעם ראשונה
         if text == "/start":
-            hello = (
-                "שלום! אני מערכת לניטור סכנות מבוססת ESP32 🛰️\n\n"
-                "מה אני עושה?\n"
-                "• מקבל התראות מה-ESP32 (עשן / רעידת אדמה)\n"
-                "• בזמן אירוע מבקש מיקום מכל המשתמשים\n"
-                "• מציג באתר מי באזור סכנה ומי לא ענה\n\n"
-                f"סטטוס נוכחי: {current_event_label()}\n\n"
-                "פקודות:\n"
-                "/help – עזרה\n"
-            )
+            first_time = not user_exists(chat_id)
+            upsert_user(chat_id, name)
+
+            if first_time:
+                hello = (
+                    f"שלום {name} 👋\n"
+                    "נרשמת לראשונה למערכת לניטור סכנות מבוססת ESP32 ✅\n\n"
+                    "מה אני עושה?\n"
+                    "• מקבל התראות מה-ESP32 (עשן / רעידת אדמה)\n"
+                    "• בזמן אירוע מבקש ממך מיקום\n"
+                    "• מציג באתר מי באזור סכנה ומי לא ענה\n\n"
+                    f"סטטוס נוכחי: {current_event_label()}\n\n"
+                    "פקודות:\n"
+                    "/help – עזרה\n"
+                )
+            else:
+                hello = (
+                    f"היי {name} 🙂\n"
+                    "אתה כבר רשום במערכת ✅\n\n"
+                    f"סטטוס נוכחי: {current_event_label()}\n\n"
+                    "פקודות:\n"
+                    "/help – עזרה\n"
+                )
+
             telegram_send(chat_id, hello)
             return jsonify({"ok": True})
 
-        # /help
+        # תמיד נרשום משתמש (אחרי /start כדי לא להרוס את first_time)
+        upsert_user(chat_id, name)
+
         if text == "/help":
             help_msg = (
                 "עזרה:\n"
@@ -300,19 +316,16 @@ def telegram_webhook():
             telegram_send(chat_id, help_msg)
             return jsonify({"ok": True})
 
-        # Location
         loc = msg.get("location")
         if loc:
             lat = float(loc["latitude"])
             lon = float(loc["longitude"])
             update_location(chat_id, lat, lon)
 
-            # אין אירוע פעיל
             if not LAST_EVENT.get("active"):
                 telegram_send(chat_id, "✅ קיבלתי מיקום. כרגע אין אירוע פעיל.")
                 return jsonify({"ok": True})
 
-            # יש אירוע אבל אין לו מיקום
             if LAST_EVENT.get("lat") is None or LAST_EVENT.get("lon") is None:
                 telegram_send(
                     chat_id,
@@ -322,7 +335,6 @@ def telegram_webhook():
                 )
                 return jsonify({"ok": True})
 
-            # יש מיקום אירוע + מיקום משתמש
             dist = haversine_km(lat, lon, float(LAST_EVENT["lat"]), float(LAST_EVENT["lon"]))
             if dist <= DANGER_RADIUS_KM:
                 telegram_send(chat_id, f"⚠️ אתה בתוך אזור הסכנה! ({dist:.2f} ק״מ)\nאירוע: {current_event_label()}")
@@ -330,14 +342,12 @@ def telegram_webhook():
                 telegram_send(chat_id, f"✅ אתה מחוץ לאזור הסכנה. ({dist:.2f} ק״מ)\nאירוע: {current_event_label()}")
             return jsonify({"ok": True})
 
-        # טקסט אחר
         if text:
             telegram_send(chat_id, "לא זיהיתי פקודה. נסה /help")
         return jsonify({"ok": True})
 
     except Exception as e:
         print("ERROR in /telegram:", repr(e))
-        # מחזירים 200 כדי שטלגרם לא יציף retries
         return jsonify({"ok": False, "error": str(e)}), 200
 
 
