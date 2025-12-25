@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 # ---------- ENV ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-SHARED_SECRET = os.environ.get("SHARED_SECRET", "")  # אותו סוד שמוגדר ב-Render
+SHARED_SECRET = os.environ.get("SHARED_SECRET", "")
 DB_PATH = os.environ.get("DB_PATH", "data.db")
 DANGER_RADIUS_KM = float(os.environ.get("DANGER_RADIUS_KM", "1.0"))
 
@@ -34,11 +34,13 @@ EVENT_TEXT = {
     ("normal", None):    "✅ חזרה לשגרה",
 }
 
+
 # ---------- DB ----------
 def db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db():
     conn = db()
@@ -56,35 +58,16 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 init_db()
+
 
 def user_exists(chat_id: str) -> bool:
     conn = db()
-    row = conn.execute(
-        "SELECT 1 FROM users WHERE chat_id=? LIMIT 1",
-        (chat_id,)
-    ).fetchone()
+    row = conn.execute("SELECT 1 FROM users WHERE chat_id=? LIMIT 1", (chat_id,)).fetchone()
     conn.close()
     return row is not None
 
-# ---------- Utils ----------
-def now_iso():
-    return datetime.now(timezone.utc).isoformat()
-
-def current_event_label():
-    if not LAST_EVENT.get("active"):
-        return "אין אירוע פעיל"
-    t = LAST_EVENT.get("type")
-    lvl = LAST_EVENT.get("level")
-    return EVENT_TEXT.get((t, lvl), f"⚠️ אירוע: {t} | רמה: {lvl}")
-
-def haversine_km(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    return R * c
 
 def upsert_user(chat_id: str, name: str):
     conn = db()
@@ -96,12 +79,14 @@ def upsert_user(chat_id: str, name: str):
     conn.commit()
     conn.close()
 
+
 def set_all_pending(pending: int):
     conn = db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET pending_loc=?", (pending,))
     conn.commit()
     conn.close()
+
 
 def update_location(chat_id: str, lat: float, lon: float):
     conn = db()
@@ -114,14 +99,40 @@ def update_location(chat_id: str, lat: float, lon: float):
     conn.commit()
     conn.close()
 
+
+# ---------- Utils ----------
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def current_event_label():
+    if not LAST_EVENT.get("active"):
+        return "אין אירוע פעיל"
+    t = LAST_EVENT.get("type")
+    lvl = LAST_EVENT.get("level")
+    return EVENT_TEXT.get((t, lvl), f"⚠️ אירוע: {t} | רמה: {lvl}")
+
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    return R * c
+
+
 # ---------- Telegram Helpers ----------
 def main_menu_keyboard():
+    # ✅ תפריט קבוע כולל כפתור מיקום
     return {
         "keyboard": [
-            [{"text": "🚀 Start"}, {"text": "❓ Help"}]
+            [{"text": "🚀 Start"}, {"text": "❓ Help"}],
+            [{"text": "📍 שלח מיקום", "request_location": True}],
         ],
         "resize_keyboard": True
     }
+
 
 def normalize_command(text: str) -> str:
     t = (text or "").strip()
@@ -131,6 +142,7 @@ def normalize_command(text: str) -> str:
     if tl in ("/help", "help") or t == "❓ Help":
         return "/help"
     return t
+
 
 # ---------- Telegram ----------
 def telegram_send(chat_id: str, text: str, reply_markup=None):
@@ -143,7 +155,9 @@ def telegram_send(chat_id: str, text: str, reply_markup=None):
     r = requests.post(url, json=payload, timeout=15)
     return r.ok, r.text
 
+
 def telegram_request_location(chat_id: str, event_text: str):
+    # בקשה "חד פעמית" למיקום בזמן אירוע
     reply_markup = {
         "keyboard": [[{"text": "📍 שלח מיקום", "request_location": True}]],
         "resize_keyboard": True,
@@ -154,6 +168,7 @@ def telegram_request_location(chat_id: str, event_text: str):
         "בבקשה שלח מיקום כדי לבדוק אם אתה באזור סכנה."
     )
     return telegram_send(chat_id, msg, reply_markup)
+
 
 # ---------- Web ----------
 @app.get("/")
@@ -209,6 +224,7 @@ def home():
 
     return html
 
+
 # ---------- ESP32 -> Server ----------
 @app.post("/alert")
 def alert():
@@ -222,7 +238,7 @@ def alert():
     event_type = data.get("type")
     level = data.get("level")
 
-    # fallback לפורמט הישן שלך
+    # fallback לפורמט הישן
     if not event_type:
         status = data.get("status")
         msg = data.get("message")
@@ -259,6 +275,7 @@ def alert():
     print("Received alert:", LAST_EVENT)
     return jsonify({"ok": True, "saved": LAST_EVENT})
 
+
 # ---------- Telegram -> Server (Webhook) ----------
 @app.post("/telegram")
 def telegram_webhook():
@@ -291,20 +308,20 @@ def telegram_webhook():
                     "• בזמן אירוע מבקש ממך מיקום\n"
                     "• מציג באתר מי באזור סכנה ומי לא ענה\n\n"
                     f"סטטוס נוכחי: {current_event_label()}\n\n"
-                    "לחץ Help לעזרה."
+                    "אפשר גם ללחוץ על 📍 כדי לשלוח מיקום."
                 )
             else:
                 hello = (
                     f"היי {name} 🙂\n"
                     "אתה כבר רשום במערכת ✅\n\n"
                     f"סטטוס נוכחי: {current_event_label()}\n\n"
-                    "לחץ Help לעזרה."
+                    "אפשר גם ללחוץ על 📍 כדי לשלוח מיקום."
                 )
 
             telegram_send(chat_id, hello, reply_markup=main_menu_keyboard())
             return jsonify({"ok": True})
 
-        # רושמים משתמש בכל הודעה (כדי לעדכן שם אם צריך)
+        # עדכון משתמש
         upsert_user(chat_id, name)
 
         # ---------- HELP ----------
@@ -312,8 +329,9 @@ def telegram_webhook():
             help_msg = (
                 "❓ עזרה:\n"
                 "• Start – הרשמה והודעת פתיחה\n"
-                "• Help – תפריט זה\n\n"
-                "📍 כשיהיה אירוע תקבל בקשה לשלוח מיקום."
+                "• Help – תפריט זה\n"
+                "• 📍 שלח מיקום – שולח את המיקום שלך\n\n"
+                "📍 בזמן אירוע המערכת תבדוק אם אתה באזור סכנה."
             )
             telegram_send(chat_id, help_msg, reply_markup=main_menu_keyboard())
             return jsonify({"ok": True})
@@ -341,11 +359,17 @@ def telegram_webhook():
 
             dist = haversine_km(lat, lon, float(LAST_EVENT["lat"]), float(LAST_EVENT["lon"]))
             if dist <= DANGER_RADIUS_KM:
-                telegram_send(chat_id, f"⚠️ אתה בתוך אזור הסכנה! ({dist:.2f} ק״מ)\nאירוע: {current_event_label()}",
-                              reply_markup=main_menu_keyboard())
+                telegram_send(
+                    chat_id,
+                    f"⚠️ אתה בתוך אזור הסכנה! ({dist:.2f} ק״מ)\nאירוע: {current_event_label()}",
+                    reply_markup=main_menu_keyboard()
+                )
             else:
-                telegram_send(chat_id, f"✅ אתה מחוץ לאזור הסכנה. ({dist:.2f} ק״מ)\nאירוע: {current_event_label()}",
-                              reply_markup=main_menu_keyboard())
+                telegram_send(
+                    chat_id,
+                    f"✅ אתה מחוץ לאזור הסכנה. ({dist:.2f} ק״מ)\nאירוע: {current_event_label()}",
+                    reply_markup=main_menu_keyboard()
+                )
             return jsonify({"ok": True})
 
         # ---------- OTHER TEXT ----------
@@ -356,6 +380,7 @@ def telegram_webhook():
     except Exception as e:
         print("ERROR in /telegram:", repr(e))
         return jsonify({"ok": False, "error": str(e)}), 200
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
