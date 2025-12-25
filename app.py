@@ -14,6 +14,9 @@ SHARED_SECRET = os.environ.get("SHARED_SECRET", "")
 DB_PATH = os.environ.get("DB_PATH", "data.db")
 DANGER_RADIUS_KM = float(os.environ.get("DANGER_RADIUS_KM", "1.0"))
 
+# ✅ קישור לאתר (כמו שביקשת)
+SERVER_PUBLIC_URL = "https://esp32-alert-server.onrender.com"
+
 # ---------- In-memory current event ----------
 LAST_EVENT = {
     "active": False,
@@ -34,13 +37,11 @@ EVENT_TEXT = {
     ("normal", None):    "✅ חזרה לשגרה",
 }
 
-
 # ---------- DB ----------
 def db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 def init_db():
     conn = db()
@@ -58,16 +59,13 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 init_db()
-
 
 def user_exists(chat_id: str) -> bool:
     conn = db()
     row = conn.execute("SELECT 1 FROM users WHERE chat_id=? LIMIT 1", (chat_id,)).fetchone()
     conn.close()
     return row is not None
-
 
 def upsert_user(chat_id: str, name: str):
     conn = db()
@@ -79,14 +77,12 @@ def upsert_user(chat_id: str, name: str):
     conn.commit()
     conn.close()
 
-
 def set_all_pending(pending: int):
     conn = db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET pending_loc=?", (pending,))
     conn.commit()
     conn.close()
-
 
 def update_location(chat_id: str, lat: float, lon: float):
     conn = db()
@@ -99,11 +95,9 @@ def update_location(chat_id: str, lat: float, lon: float):
     conn.commit()
     conn.close()
 
-
 # ---------- Utils ----------
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
-
 
 def current_event_label():
     if not LAST_EVENT.get("active"):
@@ -111,7 +105,6 @@ def current_event_label():
     t = LAST_EVENT.get("type")
     lvl = LAST_EVENT.get("level")
     return EVENT_TEXT.get((t, lvl), f"⚠️ אירוע: {t} | רמה: {lvl}")
-
 
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -121,10 +114,9 @@ def haversine_km(lat1, lon1, lat2, lon2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return R * c
 
-
 # ---------- Telegram Helpers ----------
 def main_menu_keyboard():
-    # ✅ תפריט קבוע כולל כפתור מיקום
+    # ✅ תפריט קבוע כולל כפתור מיקום (request_location עובד רק בכפתור כזה)
     return {
         "keyboard": [
             [{"text": "🚀 Start"}, {"text": "❓ Help"}],
@@ -132,7 +124,6 @@ def main_menu_keyboard():
         ],
         "resize_keyboard": True
     }
-
 
 def normalize_command(text: str) -> str:
     t = (text or "").strip()
@@ -142,7 +133,6 @@ def normalize_command(text: str) -> str:
     if tl in ("/help", "help") or t == "❓ Help":
         return "/help"
     return t
-
 
 # ---------- Telegram ----------
 def telegram_send(chat_id: str, text: str, reply_markup=None):
@@ -155,7 +145,6 @@ def telegram_send(chat_id: str, text: str, reply_markup=None):
     r = requests.post(url, json=payload, timeout=15)
     return r.ok, r.text
 
-
 def telegram_request_location(chat_id: str, event_text: str):
     # בקשה "חד פעמית" למיקום בזמן אירוע
     reply_markup = {
@@ -165,10 +154,10 @@ def telegram_request_location(chat_id: str, event_text: str):
     }
     msg = (
         f"⚠️ יש אירוע: {event_text}\n\n"
-        "בבקשה שלח מיקום כדי לבדוק אם אתה באזור סכנה."
+        "בבקשה שלח מיקום כדי לבדוק אם אתה באזור סכנה.\n\n"
+        f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}"
     )
     return telegram_send(chat_id, msg, reply_markup)
-
 
 # ---------- Web ----------
 @app.get("/")
@@ -209,6 +198,7 @@ def home():
     <p><b>Event lat/lon:</b> {LAST_EVENT["lat"]}, {LAST_EVENT["lon"]}</p>
     <p><b>Radius (km):</b> {DANGER_RADIUS_KM}</p>
     <p><b>Time (UTC):</b> {LAST_EVENT["ts"]}</p>
+    <p><b>Server:</b> {SERVER_PUBLIC_URL}</p>
     <hr/>
     """
 
@@ -223,7 +213,6 @@ def home():
     html += "<h3>⏳ No response</h3><ul>" + "".join(f"<li>{u['name']}</li>" for u in pending) + "</ul>"
 
     return html
-
 
 # ---------- ESP32 -> Server ----------
 @app.post("/alert")
@@ -275,7 +264,6 @@ def alert():
     print("Received alert:", LAST_EVENT)
     return jsonify({"ok": True, "saved": LAST_EVENT})
 
-
 # ---------- Telegram -> Server (Webhook) ----------
 @app.post("/telegram")
 def telegram_webhook():
@@ -307,15 +295,17 @@ def telegram_webhook():
                     "• מקבל התראות מה-ESP32 (עשן / רעידת אדמה)\n"
                     "• בזמן אירוע מבקש ממך מיקום\n"
                     "• מציג באתר מי באזור סכנה ומי לא ענה\n\n"
+                    f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}\n\n"
                     f"סטטוס נוכחי: {current_event_label()}\n\n"
-                    "אפשר גם ללחוץ על 📍 כדי לשלוח מיקום."
+                    "אפשר ללחוץ על 📍 כדי לשלוח מיקום."
                 )
             else:
                 hello = (
                     f"היי {name} 🙂\n"
                     "אתה כבר רשום במערכת ✅\n\n"
+                    f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}\n\n"
                     f"סטטוס נוכחי: {current_event_label()}\n\n"
-                    "אפשר גם ללחוץ על 📍 כדי לשלוח מיקום."
+                    "אפשר ללחוץ על 📍 כדי לשלוח מיקום."
                 )
 
             telegram_send(chat_id, hello, reply_markup=main_menu_keyboard())
@@ -331,9 +321,20 @@ def telegram_webhook():
                 "• Start – הרשמה והודעת פתיחה\n"
                 "• Help – תפריט זה\n"
                 "• 📍 שלח מיקום – שולח את המיקום שלך\n\n"
-                "📍 בזמן אירוע המערכת תבדוק אם אתה באזור סכנה."
+                f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}\n\n"
+                "בזמן אירוע המערכת תבדוק אם אתה באזור סכנה."
             )
             telegram_send(chat_id, help_msg, reply_markup=main_menu_keyboard())
+            return jsonify({"ok": True})
+
+        # אם המשתמש כתב "📍 שלח מיקום" אבל לא נשלח location (כלומר לא נתן הרשאה)
+        if text == "📍 שלח מיקום":
+            telegram_send(
+                chat_id,
+                "כדי לשלוח מיקום צריך ללחוץ על כפתור 📍 ולתת הרשאה למיקום.\n"
+                "אם לא קופץ חלון הרשאה – בדוק בהגדרות טלגרם שהרשאת Location פתוחה.",
+                reply_markup=main_menu_keyboard()
+            )
             return jsonify({"ok": True})
 
         # ---------- LOCATION ----------
@@ -344,7 +345,11 @@ def telegram_webhook():
             update_location(chat_id, lat, lon)
 
             if not LAST_EVENT.get("active"):
-                telegram_send(chat_id, "✅ קיבלתי מיקום. כרגע אין אירוע פעיל.", reply_markup=main_menu_keyboard())
+                telegram_send(
+                    chat_id,
+                    f"✅ קיבלתי מיקום. כרגע אין אירוע פעיל.\n\n🌐 {SERVER_PUBLIC_URL}",
+                    reply_markup=main_menu_keyboard()
+                )
                 return jsonify({"ok": True})
 
             if LAST_EVENT.get("lat") is None or LAST_EVENT.get("lon") is None:
@@ -352,7 +357,8 @@ def telegram_webhook():
                     chat_id,
                     "✅ קיבלתי מיקום.\n"
                     f"יש אירוע פעיל: {current_event_label()}\n"
-                    "עדיין אין לי מיקום של האירוע עצמו, אז לא ניתן לחשב מרחק.",
+                    "עדיין אין לי מיקום של האירוע עצמו, אז לא ניתן לחשב מרחק.\n\n"
+                    f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}",
                     reply_markup=main_menu_keyboard()
                 )
                 return jsonify({"ok": True})
@@ -361,13 +367,17 @@ def telegram_webhook():
             if dist <= DANGER_RADIUS_KM:
                 telegram_send(
                     chat_id,
-                    f"⚠️ אתה בתוך אזור הסכנה! ({dist:.2f} ק״מ)\nאירוע: {current_event_label()}",
+                    f"⚠️ אתה בתוך אזור הסכנה! ({dist:.2f} ק״מ)\n"
+                    f"אירוע: {current_event_label()}\n\n"
+                    f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}",
                     reply_markup=main_menu_keyboard()
                 )
             else:
                 telegram_send(
                     chat_id,
-                    f"✅ אתה מחוץ לאזור הסכנה. ({dist:.2f} ק״מ)\nאירוע: {current_event_label()}",
+                    f"✅ אתה מחוץ לאזור הסכנה. ({dist:.2f} ק״מ)\n"
+                    f"אירוע: {current_event_label()}\n\n"
+                    f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}",
                     reply_markup=main_menu_keyboard()
                 )
             return jsonify({"ok": True})
@@ -380,7 +390,6 @@ def telegram_webhook():
     except Exception as e:
         print("ERROR in /telegram:", repr(e))
         return jsonify({"ok": False, "error": str(e)}), 200
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
