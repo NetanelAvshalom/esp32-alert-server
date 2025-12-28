@@ -191,7 +191,7 @@ def home():
             safe.append((u, dist))
 
     event_html = f"""
-    <h2>ESP32 Alert Server ✅</h2>
+    <h2>GreenEye</h2>
     <p><b>Event:</b> {current_event_label()}</p>
     <p><b>Active:</b> {LAST_EVENT["active"]}</p>
     <p><b>Device:</b> {LAST_EVENT["device_id"]}</p>
