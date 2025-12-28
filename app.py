@@ -188,23 +188,227 @@ def home():
     def row(u, dist):
         dist_str = "N/A" if dist is None else f"{dist:.2f} km"
         last_ts = u["last_loc_ts"] or "N/A"
-        return f"<li>{u['name']} — {dist_str} — last={last_ts}</li>"
+        return f"""
+        <div class="row">
+          <div class="name">{u['name']}</div>
+          <div class="meta">{dist_str} • last: {last_ts}</div>
+        </div>
+        """
+
+    # צבע סטטוס לאירוע
+    event_label = current_event_label()
+    badge_class = "ok"
+    if LAST_EVENT.get("active"):
+        badge_class = "warn"
+        if LAST_EVENT.get("type") in ("smoke",) and LAST_EVENT.get("level") == "strong":
+            badge_class = "danger"
+        if LAST_EVENT.get("type") in ("quake",) and LAST_EVENT.get("level") == "strong":
+            badge_class = "danger"
 
     html = f"""
-    <h2>GreenEye</h2>
-    <p><b>Event:</b> {current_event_label()}</p>
-    <p><b>Active:</b> {LAST_EVENT["active"]}</p>
-    <p><b>Device:</b> {LAST_EVENT["device_id"]}</p>
-    <p><b>Event lat/lon:</b> {LAST_EVENT["lat"]}, {LAST_EVENT["lon"]}</p>
-    <p><b>Radius (km):</b> {DANGER_RADIUS_KM}</p>
-    <p><b>Time (UTC):</b> {LAST_EVENT["ts"]}</p>
-    <p><b>Server:</b> {SERVER_PUBLIC_URL}</p>
-    <hr/>
+    <!doctype html>
+    <html lang="he" dir="rtl">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>GreenEye</title>
+      <style>
+        :root {{
+          --bg: #0b1220;
+          --card: #111a2e;
+          --text: #eaf0ff;
+          --muted: rgba(234,240,255,.72);
+          --line: rgba(234,240,255,.14);
+          --ok: #2dd4bf;
+          --warn: #fbbf24;
+          --danger: #fb7185;
+        }}
+        body {{
+          margin: 0;
+          font-family: Arial, sans-serif;
+          background: radial-gradient(1200px 600px at 20% 0%, rgba(45,212,191,.18), transparent 60%),
+                      radial-gradient(900px 500px at 90% 10%, rgba(251,113,133,.14), transparent 55%),
+                      var(--bg);
+          color: var(--text);
+        }}
+        .wrap {{
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 22px 16px 60px;
+        }}
+        .header {{
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 14px;
+        }}
+        h1 {{
+          margin: 0;
+          font-size: 34px;
+          letter-spacing: .4px;
+        }}
+        .pill {{
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          border-radius: 999px;
+          font-weight: 700;
+          border: 1px solid var(--line);
+          background: rgba(17,26,46,.65);
+        }}
+        .pill.ok {{ color: var(--ok); }}
+        .pill.warn {{ color: var(--warn); }}
+        .pill.danger {{ color: var(--danger); }}
+        .grid {{
+          display: grid;
+          grid-template-columns: 1.1fr .9fr;
+          gap: 14px;
+          margin-top: 14px;
+        }}
+        @media (max-width: 860px) {{
+          .grid {{ grid-template-columns: 1fr; }}
+        }}
+        .card {{
+          background: rgba(17,26,46,.78);
+          border: 1px solid var(--line);
+          border-radius: 18px;
+          padding: 16px;
+          box-shadow: 0 12px 35px rgba(0,0,0,.35);
+        }}
+        .card h2 {{
+          margin: 0 0 10px;
+          font-size: 18px;
+        }}
+        .kv {{
+          display: grid;
+          grid-template-columns: 160px 1fr;
+          gap: 8px 12px;
+          font-size: 14px;
+          color: var(--muted);
+        }}
+        .kv b {{ color: var(--text); font-weight: 700; }}
+        .section {{
+          margin-top: 14px;
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 14px;
+        }}
+        .list {{
+          display: grid;
+          gap: 10px;
+        }}
+        .row {{
+          padding: 12px;
+          border-radius: 14px;
+          border: 1px solid var(--line);
+          background: rgba(255,255,255,.04);
+        }}
+        .name {{
+          font-weight: 800;
+          margin-bottom: 3px;
+        }}
+        .meta {{
+          font-size: 13px;
+          color: var(--muted);
+        }}
+        .tag {{
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          font-weight: 800;
+        }}
+        .tag .dot {{
+          width: 10px; height: 10px; border-radius: 50%;
+          background: var(--ok);
+          box-shadow: 0 0 0 4px rgba(45,212,191,.15);
+        }}
+        .tag.warn .dot {{
+          background: var(--warn);
+          box-shadow: 0 0 0 4px rgba(251,191,36,.15);
+        }}
+        .tag.danger .dot {{
+          background: var(--danger);
+          box-shadow: 0 0 0 4px rgba(251,113,133,.15);
+        }}
+        a {{
+          color: var(--ok);
+          text-decoration: none;
+        }}
+        a:hover {{
+          text-decoration: underline;
+        }}
+        .footer {{
+          margin-top: 14px;
+          color: var(--muted);
+          font-size: 13px;
+          text-align: center;
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="header">
+          <h1>GreenEye</h1>
+          <div class="pill {badge_class}">Status: {event_label}</div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h2>📡 מידע מערכת</h2>
+            <div class="kv">
+              <div><b>Active</b></div><div>{LAST_EVENT["active"]}</div>
+              <div><b>Device</b></div><div>{LAST_EVENT["device_id"]}</div>
+              <div><b>Event lat/lon</b></div><div>{LAST_EVENT["lat"]}, {LAST_EVENT["lon"]}</div>
+              <div><b>Radius (km)</b></div><div>{DANGER_RADIUS_KM}</div>
+              <div><b>Time (UTC)</b></div><div>{LAST_EVENT["ts"]}</div>
+              <div><b>Server</b></div><div><a href="{SERVER_PUBLIC_URL}">{SERVER_PUBLIC_URL}</a></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>🧭 מקרא</h2>
+            <div class="list">
+              <div class="tag danger"><span class="dot"></span> In danger</div>
+              <div class="tag"><span class="dot"></span> Safe / Unknown</div>
+              <div class="tag warn"><span class="dot"></span> No response</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="card">
+            <h2>🚨 In danger ({len(danger)})</h2>
+            <div class="list">
+              {("".join(row(u, d) for u, d in danger) if danger else '<div class="meta">אין משתמשים באזור סכנה כרגע.</div>')}
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>✅ Safe / Unknown ({len(safe)})</h2>
+            <div class="list">
+              {("".join(row(u, d) for u, d in safe) if safe else '<div class="meta">אין רשומות כרגע.</div>')}
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>⏳ No response ({len(pending)})</h2>
+            <div class="list">
+              {("".join(f'<div class="row"><div class="name">{u["name"]}</div><div class="meta">ממתין למיקום…</div></div>' for u in pending) if pending else '<div class="meta">כולם ענו 👍</div>')}
+            </div>
+          </div>
+        </div>
+
+        <div class="footer">
+          GreenEye • simple dashboard
+        </div>
+      </div>
+    </body>
+    </html>
     """
-    html += "<h3>🚨 In danger</h3><ul>" + "".join(row(u, d) for u, d in danger) + "</ul>"
-    html += "<h3>✅ Safe / Unknown</h3><ul>" + "".join(row(u, d) for u, d in safe) + "</ul>"
-    html += "<h3>⏳ No response</h3><ul>" + "".join(f"<li>{u['name']}</li>" for u in pending) + "</ul>"
     return html
+
 
 # ---------- ESP32 -> Server ----------
 @app.post("/alert")
