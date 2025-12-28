@@ -116,7 +116,7 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 # ---------- Telegram Helpers ----------
 def main_menu_keyboard():
-    # ✅ תפריט קבוע כולל כפתור מיקום (request_location עובד רק בכפתור כזה)
+    # ✅ תפריט קבוע כולל כפתור מיקום (request_location עובד רק בכפתור keyboard)
     return {
         "keyboard": [
             [{"text": "🚀 Start"}, {"text": "❓ Help"}],
@@ -166,9 +166,7 @@ def home():
     users = conn.execute("SELECT * FROM users").fetchall()
     conn.close()
 
-    danger = []
-    safe = []
-    pending = []
+    danger, safe, pending = [], [], []
 
     for u in users:
         if u["pending_loc"] == 1:
@@ -185,12 +183,14 @@ def home():
             float(u["last_lat"]), float(u["last_lon"]),
             float(LAST_EVENT["lat"]), float(LAST_EVENT["lon"])
         )
-        if dist <= DANGER_RADIUS_KM:
-            danger.append((u, dist))
-        else:
-            safe.append((u, dist))
+        (danger if dist <= DANGER_RADIUS_KM else safe).append((u, dist))
 
-    event_html = f"""
+    def row(u, dist):
+        dist_str = "N/A" if dist is None else f"{dist:.2f} km"
+        last_ts = u["last_loc_ts"] or "N/A"
+        return f"<li>{u['name']} — {dist_str} — last={last_ts}</li>"
+
+    html = f"""
     <h2>GreenEye</h2>
     <p><b>Event:</b> {current_event_label()}</p>
     <p><b>Active:</b> {LAST_EVENT["active"]}</p>
@@ -201,17 +201,9 @@ def home():
     <p><b>Server:</b> {SERVER_PUBLIC_URL}</p>
     <hr/>
     """
-
-    def row(u, dist):
-        dist_str = "N/A" if dist is None else f"{dist:.2f} km"
-        last_ts = u["last_loc_ts"] or "N/A"
-        return f"<li>{u['name']} — {dist_str} — last={last_ts}</li>"
-
-    html = event_html
     html += "<h3>🚨 In danger</h3><ul>" + "".join(row(u, d) for u, d in danger) + "</ul>"
     html += "<h3>✅ Safe / Unknown</h3><ul>" + "".join(row(u, d) for u, d in safe) + "</ul>"
     html += "<h3>⏳ No response</h3><ul>" + "".join(f"<li>{u['name']}</li>" for u in pending) + "</ul>"
-
     return html
 
 # ---------- ESP32 -> Server ----------
@@ -227,7 +219,7 @@ def alert():
     event_type = data.get("type")
     level = data.get("level")
 
-    # fallback לפורמט הישן
+    # fallback לפורמט הישן (status/message)
     if not event_type:
         status = data.get("status")
         msg = data.get("message")
@@ -251,6 +243,7 @@ def alert():
     LAST_EVENT["ts"] = now_iso()
     LAST_EVENT["raw"] = data
 
+    # כולם צריכים מיקום עכשיו
     set_all_pending(1)
 
     label = current_event_label()
@@ -311,7 +304,7 @@ def telegram_webhook():
             telegram_send(chat_id, hello, reply_markup=main_menu_keyboard())
             return jsonify({"ok": True})
 
-        # עדכון משתמש
+        # עדכון משתמש בכל הודעה
         upsert_user(chat_id, name)
 
         # ---------- HELP ----------
@@ -327,11 +320,11 @@ def telegram_webhook():
             telegram_send(chat_id, help_msg, reply_markup=main_menu_keyboard())
             return jsonify({"ok": True})
 
-        # אם המשתמש כתב "📍 שלח מיקום" אבל לא נשלח location (כלומר לא נתן הרשאה)
+        # אם המשתמש הקליד/לחץ טקסט אבל לא שלח Location בפועל
         if text == "📍 שלח מיקום":
             telegram_send(
                 chat_id,
-                "כדי לשלוח מיקום צריך ללחוץ על כפתור 📍 ולתת הרשאה למיקום.\n"
+                "כדי לשלוח מיקום צריך ללחוץ על כפתור 📍 ולאשר הרשאת מיקום.\n"
                 "אם לא קופץ חלון הרשאה – בדוק בהגדרות טלגרם שהרשאת Location פתוחה.",
                 reply_markup=main_menu_keyboard()
             )
