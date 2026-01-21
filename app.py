@@ -392,7 +392,7 @@ def home():
             <h2>🧭 מקרא</h2>
             <div class="list">
               <div class="row"><div class="name">🚨 In danger</div><div class="meta">בתוך הרדיוס</div></div>
-              <div class="row"><div class="name">✅ Safe / Unknown</div><div class="meta">מחוץ לרדיוס / חסר מידע</div></div>
+              <div class="row"><div class="name">✅ Safe</div><div class="meta">מחוץ לרדיוס / חסר מידע</div></div>
               <div class="row"><div class="name">⏳ No response</div><div class="meta">ממתין למיקום</div></div>
             </div>
           </div>
