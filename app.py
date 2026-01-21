@@ -407,7 +407,7 @@ def home():
           </div>
 
           <div class="card">
-            <h2>✅ Safe / Unknown ({len(safe)})</h2>
+            <h2>✅ Safe  ({len(safe)})</h2>
             <div class="list">
               {("".join(row(u, d) for u, d in safe) if safe else '<div class="meta">אין רשומות כרגע.</div>')}
             </div>
