@@ -17,7 +17,6 @@ DANGER_RADIUS_KM = float(os.environ.get("DANGER_RADIUS_KM", "1.0"))
 # ✅ קישור לאתר
 SERVER_PUBLIC_URL = "https://esp32-alert-server.onrender.com"
 
-
 # ---------- In-memory current event ----------
 LAST_EVENT = {
     "active": False,
@@ -430,6 +429,19 @@ def home():
     """
     return html
 
+# ✅✅✅ ESP32 pulls current event (חדש)
+@app.get("/current_event")
+def current_event():
+    return jsonify({
+        "active": bool(LAST_EVENT.get("active", False)),
+        "type": LAST_EVENT.get("type"),
+        "level": LAST_EVENT.get("level"),
+        "ts": LAST_EVENT.get("ts"),
+        "device_id": LAST_EVENT.get("device_id"),
+        "lat": LAST_EVENT.get("lat"),
+        "lon": LAST_EVENT.get("lon"),
+        "description": LAST_EVENT.get("description"),
+    })
 
 # ---------- ESP32 -> Server ----------
 @app.post("/alert")
@@ -478,7 +490,6 @@ def alert():
     telegram_broadcast_request_location(current_event_label())
 
     return jsonify({"ok": True, "saved": LAST_EVENT})
-
 
 # ---------- Telegram -> Server (Webhook) ----------
 @app.post("/telegram")
@@ -688,7 +699,6 @@ def telegram_webhook():
     except Exception as e:
         print("ERROR in /telegram:", repr(e))
         return jsonify({"ok": False, "error": str(e)}), 200
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
