@@ -601,14 +601,21 @@ def telegram_webhook():
             telegram_send(chat_id, help_msg, reply_markup=main_menu_keyboard())
             return jsonify({"ok": True})
 
-        # ---------- סיום אירוע ----------
+        # ---------- ✅✅✅ סיום אירוע (שולח לכולם 2 הודעות: "הסתיים" ואז "חזרה לשגרה") ----------
         if text == "🔚 סיום אירוע":
+            # ניקוי אירוע
             reset_event()
             set_all_pending(0)
 
-            # ✅ שגרה: אפשר גם לשדר לכולם (יותר הגיוני), אבל אם תרצה להשאיר רק למי שלח - תגיד לי
+            # 1) הודעה לכל המשתמשים: האירוע נסגר ע"י משתמש
             telegram_broadcast(
-                "✅ יש אירוע: חזרה לשגרה\nהאירוע הסתיים.\n\n"
+                "🔔 עדכון מערכת:\nהאירוע סומן כנסגר ע״י משתמש.",
+                reply_markup=main_menu_keyboard()
+            )
+
+            # 2) הודעה לכל המשתמשים: חזרה לשגרה
+            telegram_broadcast(
+                "✅ חזרה לשגרה.\n\n"
                 f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}",
                 reply_markup=main_menu_keyboard()
             )
