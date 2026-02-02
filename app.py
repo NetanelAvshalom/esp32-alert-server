@@ -49,6 +49,8 @@ EVENT_TEXT = {
     ("terror", "reported"): "🚨 אירוע חריג (פח״ע)",
 }
 
+HAZARD_TYPES = {"smoke", "quake", "terror"}  # רק אלה מצדיקים בקשת מיקום
+
 # ---------- DB ----------
 def db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -140,6 +142,9 @@ def reset_event():
     LAST_EVENT["reported_ts"] = None
     LAST_EVENT["description"] = None
 
+def is_hazard_active() -> bool:
+    return bool(LAST_EVENT.get("active")) and (LAST_EVENT.get("type") in HAZARD_TYPES)
+
 # ---------- Telegram Helpers ----------
 def main_menu_keyboard():
     # ✅ תפריט קבוע כולל כפתור מיקום + אירוע חריג + סיום אירוע + תיאור
@@ -174,8 +179,18 @@ def telegram_send(chat_id: str, text: str, reply_markup=None):
     r = requests.post(url, json=payload, timeout=15)
     return r.ok, r.text
 
+def telegram_broadcast(text: str, reply_markup=None):
+    conn = db()
+    users = conn.execute("SELECT chat_id FROM users").fetchall()
+    conn.close()
+
+    for u in users:
+        telegram_send(u["chat_id"], text, reply_markup=reply_markup)
+
 def telegram_broadcast_request_location(event_text: str):
-    # שולחים בקשת מיקום לכל המשתמשים
+    """
+    שולחים בקשת מיקום לכל המשתמשים (רק בזמן אירוע מסוכן).
+    """
     conn = db()
     users = conn.execute("SELECT chat_id FROM users").fetchall()
     conn.close()
@@ -188,7 +203,7 @@ def telegram_broadcast_request_location(event_text: str):
 
     msg = (
         f"⚠️ יש אירוע: {event_text}\n\n"
-        "בבקשה שלח מיקום כדי לבדוק אם אתה באזור סכנה.\n\n"
+        "📍 בבקשה שלח מיקום כדי לבדוק אם אתה באזור סכנה.\n\n"
         f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}"
     )
 
@@ -471,6 +486,20 @@ def alert():
         else:
             level = None
 
+    # ---------- ✅ FIX: normal = חזרה לשגרה (לא מבקשים מיקום!) ----------
+    if event_type == "normal":
+        reset_event()
+        set_all_pending(0)
+
+        # הודעת שגרה לכל המשתמשים (ללא request_location)
+        telegram_broadcast(
+            "✅ יש אירוע: חזרה לשגרה\nהאירוע הסתיים.\n\n"
+            f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}",
+            reply_markup=main_menu_keyboard()
+        )
+        return jsonify({"ok": True, "status": "cleared"})
+
+    # ---------- אירוע מסוכן (smoke/quake וכו') ----------
     LAST_EVENT["active"] = True
     LAST_EVENT["type"] = event_type
     LAST_EVENT["level"] = level
@@ -485,9 +514,17 @@ def alert():
     LAST_EVENT["reported_by_name"] = "ESP32"
     LAST_EVENT["reported_ts"] = now_iso()
 
-    # כולם צריכים מיקום עכשיו
-    set_all_pending(1)
-    telegram_broadcast_request_location(current_event_label())
+    # בקשת מיקום רק אם זה אירוע "מסוכן"
+    if event_type in HAZARD_TYPES:
+        set_all_pending(1)
+        telegram_broadcast_request_location(current_event_label())
+    else:
+        # unknown או משהו לא מסוכן: שולחים עדכון בלבד בלי מיקום
+        set_all_pending(0)
+        telegram_broadcast(
+            f"ℹ️ עדכון מערכת: {current_event_label()}\n\n🌐 {SERVER_PUBLIC_URL}",
+            reply_markup=main_menu_keyboard()
+        )
 
     return jsonify({"ok": True, "saved": LAST_EVENT})
 
@@ -568,7 +605,13 @@ def telegram_webhook():
         if text == "🔚 סיום אירוע":
             reset_event()
             set_all_pending(0)
-            telegram_send(chat_id, "✅ האירוע הסתיים. חזרה לשגרה.", reply_markup=main_menu_keyboard())
+
+            # ✅ שגרה: אפשר גם לשדר לכולם (יותר הגיוני), אבל אם תרצה להשאיר רק למי שלח - תגיד לי
+            telegram_broadcast(
+                "✅ יש אירוע: חזרה לשגרה\nהאירוע הסתיים.\n\n"
+                f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}",
+                reply_markup=main_menu_keyboard()
+            )
             return jsonify({"ok": True})
 
         # ---------- תיאור אירוע ----------
