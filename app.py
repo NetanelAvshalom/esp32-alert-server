@@ -15,10 +15,10 @@ DB_PATH = os.environ.get("DB_PATH", "data.db")
 DANGER_RADIUS_KM = float(os.environ.get("DANGER_RADIUS_KM", "1.0"))  # fallback
 
 # ---------- Radius per event (km) - "Israel practical" defaults ----------
-SMOKE_RADIUS_KM = float(os.environ.get("SMOKE_RADIUS_KM", "0.2"))              # 200m לבית/בניין
-QUAKE_LIGHT_RADIUS_KM = float(os.environ.get("QUAKE_LIGHT_RADIUS_KM", "35"))   # רעידה קלה
-QUAKE_STRONG_RADIUS_KM = float(os.environ.get("QUAKE_STRONG_RADIUS_KM", "120"))# רעידה חזקה
-TERROR_RADIUS_KM = float(os.environ.get("TERROR_RADIUS_KM", "10"))             # אופציונלי
+SMOKE_RADIUS_KM = float(os.environ.get("SMOKE_RADIUS_KM", "0.2"))               # 200m לבית/בניין
+QUAKE_LIGHT_RADIUS_KM = float(os.environ.get("QUAKE_LIGHT_RADIUS_KM", "35"))    # רעידה קלה
+QUAKE_STRONG_RADIUS_KM = float(os.environ.get("QUAKE_STRONG_RADIUS_KM", "120")) # רעידה חזקה
+TERROR_RADIUS_KM = float(os.environ.get("TERROR_RADIUS_KM", "10"))              # אופציונלי
 
 # ✅ קישור לאתר
 SERVER_PUBLIC_URL = "https://esp32-alert-server.onrender.com"
@@ -54,6 +54,22 @@ EVENT_TEXT = {
     ("normal", None):    "✅ חזרה לשגרה",
     ("terror", "reported"): "🚨 אירוע חריג (פח״ע)",
 }
+
+# ✅ הנחיות בטיחות — יישלחו רק למי שבתוך הרדיוס
+QUAKE_SAFETY_TEXT = (
+    "📢 הנחיות בעת רעידת אדמה:\n"
+    "• יש לצאת למרחב פתוח ולהתרחק ממבנים.\n"
+    "• אם אתם בתוך מבנה – יש להתפנות בזהירות.\n"
+    "• יש אורות מנחים – בבקשה ללכת לכיוון האור הירוק ✅"
+)
+
+SMOKE_SAFETY_TEXT = (
+    "🔥 הנחיות בעשן/שריפה:\n"
+    "• התקשר/י מיד לכבאות והצלה: 102\n"
+    "• התפנה/י מהבית/בניין בהקדם.\n"
+    "• אל תשתמש/י במעלית.\n"
+    "• אם יש עשן – התכופף/י נמוך והתרחק/י מהעשן."
+)
 
 HAZARD_TYPES = {"smoke", "quake", "terror"}  # רק אלה מצדיקים בקשת מיקום
 
@@ -148,11 +164,8 @@ def reset_event():
     LAST_EVENT["reported_ts"] = None
     LAST_EVENT["description"] = None
 
-def is_hazard_active() -> bool:
-    return bool(LAST_EVENT.get("active")) and (LAST_EVENT.get("type") in HAZARD_TYPES)
-
 def current_radius_km() -> float:
-    """רדיוס דינמי לפי סוג האירוע/רמה (ברירות מחדל פרקטיות לישראל)."""
+    """רדיוס דינמי לפי סוג האירוע/רמה."""
     if not LAST_EVENT.get("active"):
         return 0.0
 
@@ -165,14 +178,21 @@ def current_radius_km() -> float:
     if t == "quake":
         if lvl == "strong":
             return QUAKE_STRONG_RADIUS_KM
-        # ברירת מחדל: quake light
         return QUAKE_LIGHT_RADIUS_KM
 
     if t == "terror":
         return TERROR_RADIUS_KM
 
-    # fallback
     return DANGER_RADIUS_KM
+
+def normalize_command(text: str) -> str:
+    t = (text or "").strip()
+    tl = t.lower()
+    if tl in ("/start", "start") or t == "🚀 Start":
+        return "/start"
+    if tl in ("/help", "help") or t == "❓ Help":
+        return "/help"
+    return t
 
 # ---------- Telegram Helpers ----------
 def main_menu_keyboard():
@@ -185,16 +205,6 @@ def main_menu_keyboard():
         ],
         "resize_keyboard": True
     }
-
-def normalize_command(text: str) -> str:
-    t = (text or "").strip()
-    tl = t.lower()
-
-    if tl in ("/start", "start") or t == "🚀 Start":
-        return "/start"
-    if tl in ("/help", "help") or t == "❓ Help":
-        return "/help"
-    return t
 
 # ---------- Telegram ----------
 def telegram_send(chat_id: str, text: str, reply_markup=None):
@@ -211,7 +221,6 @@ def telegram_broadcast(text: str, reply_markup=None):
     conn = db()
     users = conn.execute("SELECT chat_id FROM users").fetchall()
     conn.close()
-
     for u in users:
         telegram_send(u["chat_id"], text, reply_markup=reply_markup)
 
@@ -243,7 +252,6 @@ def home():
     conn.close()
 
     danger, safe, pending = [], [], []
-
     radius_km = current_radius_km()
 
     for u in users:
@@ -471,7 +479,7 @@ def home():
     """
     return html
 
-# ✅✅✅ ESP32 pulls current event
+# ✅ ESP32 pulls current event
 @app.get("/current_event")
 def current_event():
     return jsonify({
@@ -483,7 +491,7 @@ def current_event():
         "lat": LAST_EVENT.get("lat"),
         "lon": LAST_EVENT.get("lon"),
         "description": LAST_EVENT.get("description"),
-        "radius_km": current_radius_km(),  # ✅ חדש
+        "radius_km": current_radius_km(),
     })
 
 # ---------- ESP32 -> Server ----------
@@ -584,21 +592,18 @@ def telegram_webhook():
             first_time = not user_exists(chat_id)
             upsert_user(chat_id, name)
 
-            if first_time:
-                hello = (
-                    f"שלום {name} 👋\n"
-                    "נרשמת לראשונה למערכת GreenEye ✅\n\n"
-                    f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}\n\n"
-                    f"סטטוס נוכחי: {current_event_label()}\n\n"
-                    "אפשר ללחוץ על 📍 כדי לשלוח מיקום."
-                )
-            else:
-                hello = (
-                    f"היי {name} 🙂\n"
-                    "אתה כבר רשום במערכת ✅\n\n"
-                    f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}\n\n"
-                    f"סטטוס נוכחי: {current_event_label()}"
-                )
+            hello = (
+                f"שלום {name} 👋\n"
+                "נרשמת לראשונה למערכת GreenEye ✅\n\n"
+                f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}\n\n"
+                f"סטטוס נוכחי: {current_event_label()}\n\n"
+                "אפשר ללחוץ על 📍 כדי לשלוח מיקום."
+            ) if first_time else (
+                f"היי {name} 🙂\n"
+                "אתה כבר רשום במערכת ✅\n\n"
+                f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}\n\n"
+                f"סטטוס נוכחי: {current_event_label()}"
+            )
 
             telegram_send(chat_id, hello, reply_markup=main_menu_keyboard())
             return jsonify({"ok": True})
@@ -620,7 +625,6 @@ def telegram_webhook():
         if text == "🔚 סיום אירוע":
             reset_event()
             set_all_pending(0)
-
             telegram_broadcast("🔔 עדכון מערכת:\nהאירוע סומן כנסגר ע״י משתמש.", reply_markup=main_menu_keyboard())
             telegram_broadcast("✅ חזרה לשגרה.\n\n" f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}", reply_markup=main_menu_keyboard())
             return jsonify({"ok": True})
@@ -685,15 +689,8 @@ def telegram_webhook():
             ):
                 LAST_EVENT["lat"] = lat
                 LAST_EVENT["lon"] = lon
-
                 telegram_broadcast_request_location(current_event_label())
-
-                telegram_send(
-                    chat_id,
-                    "✅ קיבלתי את מיקום האירוע.\n"
-                    "שלחתי עכשיו לכל המשתמשים בקשה למיקום כדי לבדוק מי באזור.",
-                    reply_markup=main_menu_keyboard()
-                )
+                telegram_send(chat_id, "✅ קיבלתי את מיקום האירוע.\nשלחתי עכשיו לכל המשתמשים בקשה למיקום כדי לבדוק מי באזור.", reply_markup=main_menu_keyboard())
                 return jsonify({"ok": True})
 
             if not LAST_EVENT.get("active"):
@@ -715,11 +712,18 @@ def telegram_webhook():
             radius_km = current_radius_km()
 
             if dist <= radius_km:
+                extra = ""
+                if LAST_EVENT.get("type") == "quake":
+                    extra = "\n\n" + QUAKE_SAFETY_TEXT
+                elif LAST_EVENT.get("type") == "smoke":
+                    extra = "\n\n" + SMOKE_SAFETY_TEXT
+
                 telegram_send(
                     chat_id,
                     f"⚠️ אתה בתוך אזור הסכנה! ({dist:.2f} ק״מ)\n"
                     f"רדיוס נוכחי: {radius_km} ק״מ\n"
-                    f"אירוע: {current_event_label()}\n\n"
+                    f"אירוע: {current_event_label()}"
+                    f"{extra}\n\n"
                     f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}",
                     reply_markup=main_menu_keyboard()
                 )
