@@ -20,6 +20,9 @@ QUAKE_LIGHT_RADIUS_KM = float(os.environ.get("QUAKE_LIGHT_RADIUS_KM", "35"))    
 QUAKE_STRONG_RADIUS_KM = float(os.environ.get("QUAKE_STRONG_RADIUS_KM", "120")) # רעידה חזקה
 TERROR_RADIUS_KM = float(os.environ.get("TERROR_RADIUS_KM", "10"))              # אופציונלי
 
+# ✅ חדש: Near home threshold (km)
+HOME_NEAR_RADIUS_KM = float(os.environ.get("HOME_NEAR_RADIUS_KM", "0.2"))       # 200m
+
 # ✅ קישור לאתר
 SERVER_PUBLIC_URL = "https://esp32-alert-server.onrender.com"
 
@@ -263,7 +266,7 @@ def home():
     users = conn.execute("SELECT * FROM users").fetchall()
     conn.close()
 
-    danger, safe, pending = [], [], []
+    danger, safe, pending, near_home = [], [], [], []
     radius_km = current_radius_km()
 
     for u in users:
@@ -281,7 +284,12 @@ def home():
             float(u["last_lat"]), float(u["last_lon"]),
             float(LAST_EVENT["lat"]), float(LAST_EVENT["lon"])
         )
-        (danger if dist <= radius_km else safe).append((u, dist))
+
+        # ✅ חדש: ברעידה בלבד, מי שבמרחק <= 200m מסומן כ"Near the Home"
+        if LAST_EVENT.get("type") == "quake" and dist <= HOME_NEAR_RADIUS_KM:
+            near_home.append((u, dist))
+        else:
+            (danger if dist <= radius_km else safe).append((u, dist))
 
     def row(u, dist):
         dist_str = "N/A" if dist is None else f"{dist:.2f} km"
@@ -303,6 +311,8 @@ def home():
     desc = LAST_EVENT.get("description") or "—"
     rep_name = LAST_EVENT.get("reported_by_name") or "—"
     rep_ts = LAST_EVENT.get("reported_ts") or "—"
+
+    show_near_home = (LAST_EVENT.get("active") and LAST_EVENT.get("type") == "quake")
 
     html = f"""
     <!doctype html>
@@ -442,6 +452,7 @@ def home():
               <div><b>Device</b></div><div>{LAST_EVENT["device_id"]}</div>
               <div><b>Event lat/lon</b></div><div>{LAST_EVENT["lat"]}, {LAST_EVENT["lon"]}</div>
               <div><b>Radius (km)</b></div><div>{radius_km}</div>
+              <div><b>Near-Home (km)</b></div><div>{HOME_NEAR_RADIUS_KM}</div>
               <div><b>Time (UTC)</b></div><div>{LAST_EVENT["ts"]}</div>
               <div><b>Reported by</b></div><div>{rep_name}<br><small>{rep_ts}</small></div>
               <div><b>Description</b></div><div>{desc}</div>
@@ -452,6 +463,7 @@ def home():
           <div class="card">
             <h2>🧭 מקרא</h2>
             <div class="list">
+              {"<div class='row'><div class='name'>🏠 Near the Home</div><div class='meta'>עד 200 מטר מהבית (ברעידה)</div></div>" if show_near_home else ""}
               <div class="row"><div class="name">🚨 In danger</div><div class="meta">בתוך הרדיוס</div></div>
               <div class="row"><div class="name">✅ Safe</div><div class="meta">מחוץ לרדיוס / חסר מידע</div></div>
               <div class="row"><div class="name">⏳ No response</div><div class="meta">ממתין למיקום</div></div>
@@ -460,6 +472,17 @@ def home():
         </div>
 
         <div class="section">
+
+          {""
+          if not show_near_home else f"""
+          <div class="card">
+            <h2>🏠 Near the Home ({len(near_home)})</h2>
+            <div class="list">
+              {("".join(row(u, d) for u, d in near_home) if near_home else '<div class="meta">אין משתמשים קרובים לבית כרגע.</div>')}
+            </div>
+          </div>
+          """}
+
           <div class="card">
             <h2>🚨 In danger ({len(danger)})</h2>
             <div class="list">
@@ -504,6 +527,7 @@ def current_event():
         "lon": LAST_EVENT.get("lon"),
         "description": LAST_EVENT.get("description"),
         "radius_km": current_radius_km(),
+        "near_home_km": HOME_NEAR_RADIUS_KM,
     })
 
 # ---------- ESP32 -> Server ----------
@@ -724,8 +748,11 @@ def telegram_webhook():
             dist = haversine_km(lat, lon, float(LAST_EVENT["lat"]), float(LAST_EVENT["lon"]))
             radius_km = current_radius_km()
 
+            is_near_home = (LAST_EVENT.get("type") == "quake" and dist <= HOME_NEAR_RADIUS_KM)
+
             if dist <= radius_km:
                 extra = ""
+                near_home_line = "\n🏠 אתה בקרבת הבית (עד 200 מטר)." if is_near_home else ""
 
                 if LAST_EVENT.get("type") == "quake":
                     extra = "\n\n" + QUAKE_SAFETY_TEXT + "\n\n" + LED_GUIDANCE_OUTSIDE_TEXT
@@ -739,6 +766,7 @@ def telegram_webhook():
                     f"⚠️ אתה בתוך אזור הסכנה! ({dist:.2f} ק״מ)\n"
                     f"רדיוס נוכחי: {radius_km} ק״מ\n"
                     f"אירוע: {current_event_label()}"
+                    f"{near_home_line}"
                     f"{extra}\n\n"
                     f"🌐 אתר המערכת:\n{SERVER_PUBLIC_URL}",
                     reply_markup=main_menu_keyboard()
